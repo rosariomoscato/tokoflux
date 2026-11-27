@@ -2,6 +2,8 @@
 
 Monitor dell’inferenza locale / Local inference monitor
 
+![Screenshot di Tokoflux](screenshots/tokoflux.jpg)
+
 ## Avvio su Windows 11
 
 1. Estrai tutto lo ZIP in una cartella, per esempio `Documenti\Tokoflux`.
@@ -53,3 +55,7 @@ uv run --no-project --python 3.12 server.py
 ```
 
 Per eseguire il server senza aprire il browser, aggiungi `--no-browser`.
+
+## Licenza / License
+
+[MIT](LICENSE) © 2026 Rosario Moscato
