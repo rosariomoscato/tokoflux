@@ -20,9 +20,11 @@ DIST = ROOT / "frontend" / "dist"
 OLLAMA = "http://127.0.0.1:11434"
 DB = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "share")) / "Tokoflux" / "history.sqlite3"
 VERSION = "0.1.1"
-PROMPT = ("Write a Python function that merges closed overlapping intervals without "
-          "mutating its input. Include four unittest cases: empty input, unsorted "
-          "intervals, touching endpoints, and separate intervals. Return code only.")
+DEFAULT_PROMPT = ("Write a Python function that merges closed overlapping intervals without "
+                  "mutating its input. Include four unittest cases: empty input, unsorted "
+                  "intervals, touching endpoints, and separate intervals. Return code only.")
+PROMPT = DEFAULT_PROMPT
+MAX_PROMPT_LENGTH = 20000
 CONTEXT = 8192
 MAX_TOKENS = 2048
 ALLOWED_CONTEXTS = (2048, 4096, 8192, 16384, 32768)
@@ -30,6 +32,17 @@ OPENER = build_opener(ProxyHandler({}))
 LOCK = Lock()
 JOB = {"status": "idle", "model": None, "error": None}
 SERVER = None
+
+
+def validate_prompt(value):
+    """Return `value` if it is a valid prompt, otherwise raise ValueError."""
+    if not isinstance(value, str):
+        raise ValueError("prompt must be a string")
+    if not value.strip():
+        raise ValueError("prompt must not be empty")
+    if len(value) > MAX_PROMPT_LENGTH:
+        raise ValueError("prompt too long")
+    return value
 
 
 def upstream(path, data=None, timeout=5):
@@ -107,6 +120,8 @@ def parse_selection(data):
     mode = data["mode"]
     context = data.get("context", CONTEXT)
     repeats = data.get("repeats", 3)
+    prompt = data.get("prompt")
+    prompt = validate_prompt(prompt) if prompt is not None else PROMPT
     if (not isinstance(models, list) or not 1 <= len(models) <= 2
             or any(not isinstance(model, str) or not model for model in models)
             or len(set(models)) != len(models) or mode not in ("warm", "cold")
@@ -114,10 +129,10 @@ def parse_selection(data):
             or not isinstance(repeats, int) or isinstance(repeats, bool)
             or not 1 <= repeats <= 5):
         raise ValueError()
-    return {"models": models, "mode": mode, "context": context, "repeats": repeats}
+    return {"models": models, "mode": mode, "context": context, "repeats": repeats, "prompt": prompt}
 
 
-def benchmark(models, mode, session, context, repeats=1):
+def benchmark(models, mode, session, context, repeats=1, prompt=PROMPT):
     options = {"num_ctx": context, "num_predict": MAX_TOKENS, "temperature": 0}
     position = 0
     try:
@@ -131,7 +146,7 @@ def benchmark(models, mode, session, context, repeats=1):
                 ollama_json("/api/generate", {**request, "keep_alive": "5m"}, 120)
             for _ in range(repeats):
                 start, first, final = perf_counter(), None, None
-                request.update(prompt=PROMPT, stream=True, keep_alive="5m")
+                request.update(prompt=prompt, stream=True, keep_alive="5m")
                 with upstream("/api/generate", request, 300) as response:
                     for line in response:
                         packet = json.loads(line)
@@ -200,7 +215,7 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/health":
             return self.json({"app": "Tokoflux", "version": VERSION})
         if path == "/api/prompt":
-            return self.json({"prompt": PROMPT})
+            return self.json({"prompt": PROMPT, "default": DEFAULT_PROMPT})
         if path == "/api/status":
             try:
                 models = ollama_models()
@@ -227,20 +242,35 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.json({"error": "invalid_origin"}, 403)
             clear_history()
             return self.json({"cleared": True})
+        if path == "/api/prompt":
+            if not self.valid_host() or self.headers.get("Origin") != f"http://{self.headers.get('Host')}":
+                return self.json({"error": "invalid_origin"}, 403)
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= MAX_PROMPT_LENGTH + 4096:
+                    raise ValueError()
+                data = json.loads(self.rfile.read(length))
+                prompt = validate_prompt(data["prompt"])
+            except (ValueError, KeyError, TypeError):
+                return self.json({"error": "invalid_prompt"}, 400)
+            global PROMPT
+            PROMPT = prompt
+            return self.json({"prompt": PROMPT})
         if path != "/api/benchmarks":
             return self.json({"error": "not_found"}, 404)
         if not self.valid_host() or self.headers.get("Origin") != f"http://{self.headers.get('Host')}":
             return self.json({"error": "invalid_origin"}, 403)
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            if not 0 < length <= 2048:
+            if not 0 < length <= MAX_PROMPT_LENGTH + 4096:
                 raise ValueError()
             data = json.loads(self.rfile.read(length))
             selection = parse_selection(data)
         except (ValueError, KeyError, TypeError):
             return self.json({"error": "invalid_selection"}, 400)
-        models, mode, context, repeats = (selection["models"], selection["mode"],
-                                          selection["context"], selection["repeats"])
+        models, mode, context, repeats, prompt = (selection["models"], selection["mode"],
+                                                  selection["context"], selection["repeats"],
+                                                  selection["prompt"])
         with LOCK:
             if JOB["status"] == "running":
                 return self.json({"error": "already_running"}, 409)
@@ -251,7 +281,7 @@ class Handler(SimpleHTTPRequestHandler):
             if not set(models) <= installed:
                 return self.json({"error": "model_missing"}, 400)
             JOB.update(status="running", model=models[0], error=None)
-            Thread(target=benchmark, args=(models, mode, str(uuid.uuid4()), context, repeats), daemon=True).start()
+            Thread(target=benchmark, args=(models, mode, str(uuid.uuid4()), context, repeats, prompt), daemon=True).start()
         return self.json({"accepted": True}, 202)
 
     def log_message(self, fmt, *args):

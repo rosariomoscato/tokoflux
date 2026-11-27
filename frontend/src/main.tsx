@@ -48,6 +48,7 @@ const strings = {
       "Mediana e ripetizioni: ogni prova ripete la misura (predefinito 3) e mostra la mediana con l’intervallo min–max.",
     ],
     exactPrompt: "Prompt esatto", promptLangNote: "Il testo resta in inglese in entrambe le lingue.",
+    resetPrompt: "Ripristina predefinito", customPromptNote: "Un prompt personalizzato viene misurato solo sulla velocità, senza verifica di correttezza.",
     copy: "Copia", copied: "Copiato",
     credits: "Versione e crediti", creditsTech: "Tecnologie",
     showPrompt: "Mostra il prompt", hidePrompt: "Nascondi il prompt",
@@ -108,6 +109,7 @@ const strings = {
       "Median and repeats: each run repeats the measurement (default 3) and shows the median with the min–max spread.",
     ],
     exactPrompt: "Exact prompt", promptLangNote: "The text stays in English in both languages.",
+    resetPrompt: "Reset to default", customPromptNote: "A custom prompt is benchmarked for speed only, with no correctness check.",
     copy: "Copy", copied: "Copied",
     credits: "Version & credits", creditsTech: "Tech stack",
     showPrompt: "Show prompt", hidePrompt: "Hide prompt",
@@ -207,6 +209,7 @@ function App() {
   const [promptOpen, setPromptOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [prompt, setPrompt] = useState("");
+  const [defaultPrompt, setDefaultPrompt] = useState("");
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [copiedHelp, setCopiedHelp] = useState(false);
   const [context, setContext] = useState(DEFAULT_CONTEXT);
@@ -242,7 +245,7 @@ function App() {
     return () => preference.removeEventListener("change", apply);
   }, [theme]);
   useEffect(() => {
-    api<{ prompt: string }>("/api/prompt").then(p => setPrompt(p.prompt)).catch(() => {});
+    api<{ prompt: string; default: string }>("/api/prompt").then(p => { setPrompt(p.prompt); setDefaultPrompt(p.default); }).catch(() => {});
   }, []);
   useEffect(() => {
     localStorage.setItem("tokoflux.vramBudget", String(vramBudget));
@@ -291,10 +294,19 @@ function App() {
     speed: run.decode, label: date(run.date), model: run.model,
   }));
 
+  async function persistPrompt(value: string) {
+    await api("/api/prompt", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: value }) });
+  }
+  function resetPrompt() {
+    setPrompt(defaultPrompt);
+    persistPrompt(defaultPrompt).catch(() => {});
+  }
   async function start() {
     setStarting(true);
     setLaunchError(false);
     try {
+      await persistPrompt(prompt);
       await api("/api/benchmarks", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ models: [modelA, modelB].filter(Boolean), mode, context }) });
       setBench(await api<Bench>("/api/benchmarks"));
@@ -489,7 +501,7 @@ function App() {
       </div>
       <section className="panel bench">
         <div className="section-head"><div><h2><FlaskConical size={21} />{t.benchmark}</h2><p>{t.benchmarkDesc}</p></div>
-          <Button type="button" disabled={busy || !status?.online || !modelA} onClick={start}>{busy ? <Activity size={17} className="pulse" /> : <Play size={16} fill="currentColor" />}{busy ? t.running : t.start}</Button></div>
+          <Button type="button" disabled={busy || !status?.online || !modelA || !prompt.trim()} onClick={start}>{busy ? <Activity size={17} className="pulse" /> : <Play size={16} fill="currentColor" />}{busy ? t.running : t.start}</Button></div>
         <div className="fields">
           <label>{t.modelA}<select value={modelA} disabled={busy || !available.length} onChange={e => setFirst(e.target.value)}>
             {!available.length && <option value="">{t.noModels}</option>}{available.map(m => <option key={m}>{m}</option>)}
@@ -520,9 +532,15 @@ function App() {
           </button>
           {promptOpen && <div className="prompt-body">
             <p className="prompt-note">{t.promptLangNote}</p>
-            <pre>{prompt || "…"}</pre>
-            <Button type="button" variant="outline" disabled={!prompt} onClick={() => copy(prompt, setCopiedPrompt)}>
-              {copiedPrompt ? <Check size={15} /> : <Copy size={15} />}{copiedPrompt ? t.copied : t.copy}</Button>
+            <textarea value={prompt} disabled={busy} rows={6} spellCheck={false} aria-label={t.exactPrompt}
+              onChange={e => setPrompt(e.target.value)} />
+            <p className="prompt-note">{t.customPromptNote}</p>
+            <div className="prompt-actions">
+              <Button type="button" variant="outline" disabled={!prompt} onClick={() => copy(prompt, setCopiedPrompt)}>
+                {copiedPrompt ? <Check size={15} /> : <Copy size={15} />}{copiedPrompt ? t.copied : t.copy}</Button>
+              <Button type="button" variant="outline" disabled={busy || prompt === defaultPrompt} onClick={resetPrompt}>
+                <RotateCcw size={15} />{t.resetPrompt}</Button>
+            </div>
           </div>}
         </div>
         <div className="feedback" aria-live="polite">
@@ -581,8 +599,8 @@ function App() {
         <section><h3>{t.whatPrompt}</h3><p>{t.whatPromptText}</p><p className="note">{t.testsNote}</p></section>
         <section><h3>{t.readMetrics}</h3><ul>{t.readMetricsList.map(item => <li key={item}>{item}</li>)}</ul></section>
         <section><h3>{t.rocmTitle}</h3><ul>{t.rocmList.map(item => <li key={item}>{item}</li>)}</ul></section>
-        <section><h3>{t.exactPrompt}</h3><p className="prompt-note">{t.promptLangNote}</p><pre>{prompt || "…"}</pre>
-          <Button type="button" variant="outline" disabled={!prompt} onClick={() => copy(prompt, setCopiedHelp)}>
+        <section><h3>{t.exactPrompt}</h3><p className="prompt-note">{t.promptLangNote}</p><pre>{defaultPrompt || "…"}</pre>
+          <Button type="button" variant="outline" disabled={!defaultPrompt} onClick={() => copy(defaultPrompt, setCopiedHelp)}>
             {copiedHelp ? <Check size={15} /> : <Copy size={15} />}{copiedHelp ? t.copied : t.copy}</Button>
         </section>
         <section><h3>{t.credits}</h3>
