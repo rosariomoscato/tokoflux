@@ -23,6 +23,7 @@ Serve `uv` nel PATH. Il launcher usa Python 3.12 (lo stesso ambiente usato duran
 ## Misure
 
 - I modelli partono in sequenza sullo stesso prompt, con un contesto configurabile (2.048–32.768 token, predefinito 8.192) e un limite di 2.048 token generati. Una prova segnala il raggiungimento del limite nel confronto.
+- Ogni prova ripete la misura **più volte per modello** (predefinito 3, al massimo 5) e mostra la **mediana** con l'intervallo **min–max**: il risultato è più affidabile di un singolo campione. Le singole ripetizioni restano consultabili nello storico.
 - **A caldo** precarica il modello prima di avviare il cronometro. **A freddo** scarica il modello dalla memoria prima della prova; la cache del sistema operativo può comunque conservare dati dell’SSD.
 - Il **primo token** è il primo frammento di risposta o ragionamento ricevuto in streaming. Il **tempo totale** è misurato dal server Tokoflux. I token/s provengono dai conteggi e dai tempi di Ollama. A caldo, la cache del prompt può incidere sulla misura.
 - La **quota del modello sulla GPU** rappresenta la memoria del modello allocata sulla GPU secondo Ollama. Il carico istantaneo della Radeon è una misura diversa.

@@ -71,6 +71,8 @@ main { padding: 38px 0 28px; }
 .lead div { color: var(--muted); font-size: 14px; }
 .lead strong { color: var(--accent); font-size: clamp(54px, 8vw, 99px); letter-spacing: -.115em; line-height: 1; }
 .lead span { color: var(--muted); margin-left: 14px; }
+.spread { display: block; margin-top: 3px; font-style: normal; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.lead .spread { margin-top: 7px; font-size: 13px; }
 strong, dd, td:nth-child(n+4) { font-variant-numeric: tabular-nums; }
 .plot, .plot-empty { height: 112px; margin-top: 12px; }
 .plot-empty { display: flex; align-items: center; justify-content: center; gap: 9px; color: var(--muted); border-bottom: 1px dashed var(--line); font-size: 13px; }

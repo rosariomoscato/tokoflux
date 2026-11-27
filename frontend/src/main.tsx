@@ -29,6 +29,7 @@ const strings = {
     comparison: "Confronto", date: "Data", model: "Modello", load: "Caricamento", cached: "Token del prompt in cache",
     tokens: "token", units: "tok/s", failed: "Impossibile leggere i dati del Monitor.",
     limit: "Limite di generazione raggiunto", noModels: "Nessun modello disponibile",
+    spread: "min–max", repeats: "{n} ripetizioni",
     help: "Guida", helpTitle: "Guida", close: "Chiudi",
     howToStart: "Come iniziare",
     howToStartText: "Avvia Ollama e lascialo aperto. Apri Tokoflux con Avvia-Tokoflux.cmd. In Benchmark scegli uno o due modelli, seleziona «A caldo» o «A freddo» e premi «Esegui prova». I risultati si salvano automaticamente in SQLite.",
@@ -44,6 +45,7 @@ const strings = {
       "Tempo al primo token: primo frammento di risposta o ragionamento ricevuto in streaming.",
       "Tempo totale: misurato dal server Tokoflux.",
       "Quota del modello sulla GPU: memoria del modello allocata sulla GPU secondo Ollama. «100% GPU» indica dove è caricato il modello, non il carico della GPU.",
+      "Mediana e ripetizioni: ogni prova ripete la misura (predefinito 3) e mostra la mediana con l’intervallo min–max.",
     ],
     exactPrompt: "Prompt esatto", promptLangNote: "Il testo resta in inglese in entrambe le lingue.",
     copy: "Copia", copied: "Copiato",
@@ -87,6 +89,7 @@ const strings = {
     comparison: "Comparison", date: "Date", model: "Model", load: "Load time", cached: "Cached prompt tokens",
     tokens: "tokens", units: "tok/s", failed: "Could not read monitor data.",
     limit: "Generation limit reached", noModels: "No model available",
+    spread: "min–max", repeats: "{n} runs",
     help: "Help", helpTitle: "Help", close: "Close",
     howToStart: "Getting started",
     howToStartText: "Start Ollama and keep it open. Open Tokoflux with Avvia-Tokoflux.cmd. In Benchmark choose one or two models, pick Warm or Cold, then press Run benchmark. Results are saved automatically to SQLite.",
@@ -102,6 +105,7 @@ const strings = {
       "Time to first token: first response or reasoning chunk received in streaming.",
       "Total time: measured by the Tokoflux server.",
       'Model share on GPU: model memory allocated on the GPU according to Ollama. "100% GPU" means where the model is loaded, not GPU load.',
+      "Median and repeats: each run repeats the measurement (default 3) and shows the median with the min–max spread.",
     ],
     exactPrompt: "Exact prompt", promptLangNote: "The text stays in English in both languages.",
     copy: "Copy", copied: "Copied",
@@ -140,6 +144,40 @@ type Run = {
 };
 type Status = { online: boolean; models: { name: string; size: number }[]; running: { name: string; size: number; size_vram?: number; context_length?: number }[] };
 type Bench = { job: { status: "idle" | "running" | "complete" | "error"; model: string | null }; runs: Run[] };
+
+type MetricKey = "decode" | "prompt" | "first" | "total" | "load" | "cached";
+
+function median(values: (number | null | undefined)[]): number | null {
+  const nums = values.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+  if (!nums.length) return null;
+  const sorted = [...nums].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function extent(values: (number | null | undefined)[]): [number, number] | null {
+  const nums = values.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+  if (!nums.length) return null;
+  return [Math.min(...nums), Math.max(...nums)];
+}
+
+type Summary = { model: string; count: number; date: string; stop: string | null } & Record<MetricKey, number | null>;
+
+function summarize(group: Run[]): Summary {
+  const last = group[group.length - 1];
+  return {
+    model: group[0]?.model ?? "",
+    count: group.length,
+    date: last?.date ?? "",
+    stop: group.some(run => run.stop === "length") ? "length" : null,
+    decode: median(group.map(run => run.decode)),
+    prompt: median(group.map(run => run.prompt)),
+    first: median(group.map(run => run.first)),
+    total: median(group.map(run => run.total)),
+    load: median(group.map(run => run.load)),
+    cached: median(group.map(run => run.cached)),
+  };
+}
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { ...init, cache: "no-store" });
@@ -243,7 +281,11 @@ function App() {
     : runs[0] ? [runs[0]] : [];
   const lastModels = [...new Set(latestSession.map(run => run.model))];
   const selectedLatest = lastModels.includes(latestModel) ? latestModel : lastModels[0] ?? "";
-  const selectedRun = latestSession.find(run => run.model === selectedLatest) ?? latestSession[0];
+  const selectedGroup = latestSession.filter(run => run.model === selectedLatest);
+  const summaryByModel = new Map(lastModels.map(model => [model, summarize(latestSession.filter(run => run.model === model))]));
+  const selectedSummary = summaryByModel.get(selectedLatest) ?? summarize(selectedGroup);
+  const spread = (key: MetricKey) => selectedSummary.count > 1 ? extent(selectedGroup.map(run => run[key])) : null;
+  const decodeSpread = spread("decode");
 
   const chart = runs.filter(run => run.model === selectedLatest && run.decode !== null).slice(0, 12).reverse().map(run => ({
     speed: run.decode, label: date(run.date), model: run.model,
@@ -292,12 +334,18 @@ function App() {
     setStopped(true);
     try { await api("/api/shutdown", { method: "POST" }); } catch { /* already gone */ }
   }
-  const compareModels = [modelA, modelB].filter(Boolean).map(model =>
-    ({ model, run: bench.runs.find(run => run.model === model && run.mode === mode) }));
+  const compareModels = [modelA, modelB].filter(Boolean).map(model => {
+    const group = latestSession.filter(run => run.model === model && run.mode === mode);
+    const source = group.length ? group : (() => {
+      const single = bench.runs.find(run => run.model === model && run.mode === mode);
+      return single ? [single] : [];
+    })();
+    return { model, summary: summarize(source) };
+  });
   const metrics = [
-    { icon: Radio, label: t.prompt, value: selectedRun?.prompt, unit: t.units },
-    { icon: Zap, label: t.first, value: selectedRun?.first, unit: "s" },
-    { icon: Timer, label: t.total, value: selectedRun?.total, unit: "s" },
+    { icon: Radio, label: t.prompt, value: selectedSummary.prompt, unit: t.units, spread: spread("prompt"), digits: 1 },
+    { icon: Zap, label: t.first, value: selectedSummary.first, unit: "s", spread: spread("first"), digits: 2 },
+    { icon: Timer, label: t.total, value: selectedSummary.total, unit: "s", spread: spread("total"), digits: 1 },
   ];
   const barMetrics: { key: "decode" | "prompt" | "first" | "total" | "load"; short: string; label: string; unit: string; lowerIsBetter: boolean; digits: number }[] = [
     { key: "decode", short: t.genShort, label: t.decode, unit: t.units, lowerIsBetter: false, digits: 1 },
@@ -313,8 +361,8 @@ function App() {
     return Math.round((lowerIsBetter ? best / value : value / best) * 100);
   };
   const compareBars = barMetrics.map(m => {
-    const a = latestSession[0]?.[m.key] ?? null;
-    const b = latestSession[1]?.[m.key] ?? null;
+    const a = summaryByModel.get(lastModels[0])?.[m.key] ?? null;
+    const b = summaryByModel.get(lastModels[1])?.[m.key] ?? null;
     const row: Record<string, unknown> = { label: m.short, fullLabel: m.label, unit: m.unit, digits: m.digits, lowerIsBetter: m.lowerIsBetter };
     row.values = { [lastModels[0]]: a, [lastModels[1]]: b };
     row[lastModels[0]] = score(a, b, m.lowerIsBetter);
@@ -326,8 +374,8 @@ function App() {
     lastModels.forEach(m => wins[m] = 0);
     let counted = 0;
     barMetrics.forEach(m => {
-      const a = latestSession[0]?.[m.key];
-      const b = latestSession[1]?.[m.key];
+      const a = summaryByModel.get(lastModels[0])?.[m.key] ?? null;
+      const b = summaryByModel.get(lastModels[1])?.[m.key] ?? null;
       if (typeof a !== "number" || typeof b !== "number" || a === b) return;
       counted++;
       const best = m.lowerIsBetter ? Math.min(a, b) : Math.max(a, b);
@@ -369,7 +417,7 @@ function App() {
               </label>}
               {lastModels.length > 1 && <Button type="button" variant={compare ? "primary" : "outline"} onClick={() => setCompare(v => !v)}>
                 {compare ? <X size={15} /> : <ArrowRightLeft size={15} />}{compare ? t.compareOff : t.compareBtn}</Button>}
-              {lastModels.length <= 1 && selectedRun && <span className="chip">{selectedRun.model}</span>}
+              {lastModels.length <= 1 && selectedSummary.model && <span className="chip">{selectedSummary.model}</span>}
             </div>
           </div>
           {compare && lastModels.length > 1 ? <>
@@ -403,7 +451,9 @@ function App() {
               {winnerInfo.winner ? <span>{t.winner} <strong>{winnerInfo.winner}</strong> · {winnerInfo.winCount}/{winnerInfo.metricCount} {t.ofMetrics}</span> : <span>{t.tie}</span>}
             </div>
           </> : <>
-            <div className="lead"><div>{t.decode}</div><strong>{format(selectedRun?.decode)}</strong><span>{t.units}</span></div>
+            <div className="lead"><div>{t.decode}</div><strong>{format(selectedSummary.decode)}</strong><span>{t.units}</span>
+              {decodeSpread && <em className="spread" title={t.spread}>{format(decodeSpread[0])}–{format(decodeSpread[1])} {t.units}</em>}
+            </div>
             {chart.length > 1 ? <div className="plot" role="img" aria-label={t.trend}>
               <ResponsiveContainer width="100%" height="100%"><AreaChart data={chart} margin={{ top: 8, right: 4, left: 4, bottom: 1 }}>
                 <defs><linearGradient id="signal" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="var(--plot)" stopOpacity={0.37} /><stop offset="100%" stopColor="var(--plot)" stopOpacity={0.02} /></linearGradient></defs>
@@ -414,9 +464,11 @@ function App() {
                   formatter={(v) => [format(typeof v === "number" ? v : null) + " " + t.units, t.decode]} />
                 <Area type="linear" dataKey="speed" stroke="var(--plot)" strokeWidth={2} fill="url(#signal)" isAnimationActive={false} />
               </AreaChart></ResponsiveContainer>
-            </div> : <div className="plot-empty"><ChartNoAxesCombined size={17} />{selectedRun ? t.trend : t.empty}</div>}
-            <div className="metric-grid">{metrics.map(({ icon: Icon, label, value, unit }) =>
-              <div className="metric" key={label}><span><Icon size={15} />{label}</span><strong>{format(value)}</strong> <small>{unit}</small></div>
+            </div> : <div className="plot-empty"><ChartNoAxesCombined size={17} />{selectedSummary.count > 0 ? t.trend : t.empty}</div>}
+            <div className="metric-grid">{metrics.map(({ icon: Icon, label, value, unit, spread: range, digits }) =>
+              <div className="metric" key={label}><span><Icon size={15} />{label}</span><strong>{format(value)}</strong> <small>{unit}</small>
+                {range && <em className="spread" title={t.spread}>{format(range[0], digits)}–{format(range[1], digits)} {unit}</em>}
+              </div>
             )}</div>
           </>}
         </section>
@@ -480,13 +532,13 @@ function App() {
         </div>
         {compareModels.length > 0 && <div className="comparison">
           <h3>{t.comparison} <span>· {t[mode]}</span></h3>
-          <div className="compare-grid">{compareModels.map(({ model, run }) => <article key={model}>
-            <div><strong>{model}</strong><small>{run ? date(run.date) : "—"}</small></div>
+          <div className="compare-grid">{compareModels.map(({ model, summary }) => <article key={model}>
+            <div><strong>{model}</strong><small>{summary.count ? date(summary.date) : "—"}{summary.count > 1 && " · " + fmt(t.repeats, summary.count)}</small></div>
             <dl>{[
-              [t.decode, run?.decode, t.units], [t.prompt, run?.prompt, t.units], [t.first, run?.first, "s"],
-              [t.total, run?.total, "s"], [t.load, run?.load, "s"], [t.cached, run?.cached, ""],
+              [t.decode, summary.decode, t.units], [t.prompt, summary.prompt, t.units], [t.first, summary.first, "s"],
+              [t.total, summary.total, "s"], [t.load, summary.load, "s"], [t.cached, summary.cached, ""],
             ].map(([label, value, unit]) => <div key={String(label)}><dt>{label}</dt><dd>{format(value as number | null, label === t.cached ? 0 : 1)} {unit}</dd></div>)}</dl>
-            {run?.stop === "length" && <small className="error">{t.limit}</small>}
+            {summary.stop === "length" && <small className="error">{t.limit}</small>}
           </article>)}</div>
         </div>}
       </section>
