@@ -55,8 +55,10 @@ class BenchmarkTests(unittest.TestCase):
         self._save = server.save
         self._ollama_json = server.ollama_json
         self._upstream = server.upstream
+        self._sandbox = server.run_tests_sandboxed
         server.JOB.update(status="idle", model=None, error=None)
         self.saved = []
+        self.sandbox_calls = []
         self.final_packet = {
             "done": True,
             "done_reason": "stop",
@@ -72,11 +74,14 @@ class BenchmarkTests(unittest.TestCase):
         server.save = self._save
         server.ollama_json = self._ollama_json
         server.upstream = self._upstream
+        server.run_tests_sandboxed = self._sandbox
         server.JOB.update(status="idle", model=None, error=None)
 
     def _patch(self):
         final = self.final_packet
         server.save = lambda run, session, position: self.saved.append((run, session, position))
+        server.run_tests_sandboxed = lambda code, timeout=server.SANDBOX_TIMEOUT: (
+            self.sandbox_calls.append(code) or {"correct": True, "passed": 4, "total": 4, "quality_error": None})
 
         def fake_ollama_json(path, data=None, timeout=5):
             if path == "/api/ps":
@@ -293,6 +298,162 @@ class PromptApiTests(unittest.TestCase):
             self.assertEqual(captured, ["session prompt"])
         finally:
             server.benchmark, server.installed_models = original_benchmark, original_installed
+
+
+class SandboxTests(unittest.TestCase):
+    """The sandbox runner executes generated unittest cases in an isolated subprocess."""
+
+    PASSING = '''
+import unittest
+
+
+def merge(intervals):
+    if not intervals:
+        return []
+    out = []
+    for start, end in sorted(intervals):
+        if out and start <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], end)
+        else:
+            out.append([start, end])
+    return out
+
+
+class TestMerge(unittest.TestCase):
+    def test_empty(self):
+        self.assertEqual(merge([]), [])
+
+    def test_unsorted(self):
+        self.assertEqual(merge([[5, 7], [1, 3]]), [[1, 3], [5, 7]])
+
+    def test_touching(self):
+        self.assertEqual(merge([[1, 2], [2, 3]]), [[1, 3]])
+
+    def test_separate(self):
+        self.assertEqual(merge([[1, 2], [4, 5]]), [[1, 2], [4, 5]])
+'''
+
+    FAILING = '''
+import unittest
+
+
+def merge(intervals):
+    return []
+
+
+class TestMerge(unittest.TestCase):
+    def test_non_empty(self):
+        self.assertEqual(merge([[1, 2]]), [[1, 2]])
+
+    def test_empty(self):
+        self.assertEqual(merge([]), [])
+'''
+
+    def test_passing_sample(self):
+        result = server.run_tests_sandboxed(self.PASSING)
+        self.assertTrue(result["correct"])
+        self.assertEqual(result["passed"], 4)
+        self.assertEqual(result["total"], 4)
+        self.assertIsNone(result["quality_error"])
+
+    def test_deliberately_failing_sample(self):
+        result = server.run_tests_sandboxed(self.FAILING)
+        self.assertFalse(result["correct"])
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(result["passed"], 1)
+        self.assertIsNone(result["quality_error"])
+
+    def test_non_code_sample(self):
+        result = server.run_tests_sandboxed("x = 42")
+        self.assertIsNone(result["correct"])
+        self.assertEqual(result["quality_error"], "no_tests")
+
+    def test_prose_refusal_reported_as_no_tests(self):
+        result = server.run_tests_sandboxed("Sorry, I cannot generate that.")
+        self.assertIsNone(result["correct"])
+        self.assertEqual(result["quality_error"], "no_tests")
+
+    def test_syntax_error_sample(self):
+        result = server.run_tests_sandboxed("def broken(:")
+        self.assertIsNone(result["correct"])
+        self.assertEqual(result["quality_error"], "syntax")
+
+    def test_timeout_sample(self):
+        code = ("import unittest\n"
+                "class T(unittest.TestCase):\n"
+                "    def test_a(self):\n"
+                "        while True:\n"
+                "            pass\n")
+        result = server.run_tests_sandboxed(code, timeout=1)
+        self.assertIsNone(result["correct"])
+        self.assertEqual(result["quality_error"], "timeout")
+
+    def test_never_crashes_on_garbage(self):
+        for sample in ("", "   ", "\x00\x01\x02", "\ud800"):
+            result = server.run_tests_sandboxed(sample)
+            self.assertIn("quality_error", result)
+            self.assertIsNone(result["correct"])
+
+
+class CorrectnessPersistenceTests(unittest.TestCase):
+    """The benchmark stores the correctness result and never the generated text."""
+
+    def setUp(self):
+        self._sandbox = server.run_tests_sandboxed
+        self._save = server.save
+        self._ollama_json = server.ollama_json
+        self._upstream = server.upstream
+        server.JOB.update(status="idle", model=None, error=None)
+        self.saved = []
+
+    def tearDown(self):
+        server.run_tests_sandboxed = self._sandbox
+        server.save = self._save
+        server.ollama_json = self._ollama_json
+        server.upstream = self._upstream
+        server.JOB.update(status="idle", model=None, error=None)
+
+    def _run_with(self, text):
+        server.save = lambda run, session, position: self.saved.append(run)
+        server.run_tests_sandboxed = lambda code, timeout=server.SANDBOX_TIMEOUT: (
+            {"correct": True, "passed": 4, "total": 4, "quality_error": None})
+
+        def fake_ollama_json(path, data=None, timeout=5):
+            return {"models": []} if path == "/api/ps" else {}
+
+        class Response:
+            def __enter__(self):
+                return iter([json.dumps({"response": text}).encode(),
+                             json.dumps({"done": True, "done_reason": "stop",
+                                         "eval_count": 10, "eval_duration": 1_000_000_000,
+                                         "prompt_eval_count": 1, "prompt_eval_duration": 1_000_000_000}).encode()])
+            def __exit__(self, *exc):
+                return False
+
+        server.ollama_json = fake_ollama_json
+        server.upstream = lambda path, data=None, timeout=5: Response()
+        server.benchmark(["m1"], "warm", "sess", 8192, repeats=1, prompt=server.DEFAULT_PROMPT)
+
+    def test_correctness_fields_persisted(self):
+        self._run_with("def merge(x): return x")
+        run = self.saved[0]
+        self.assertIn("quality", run)
+        quality = run["quality"]
+        self.assertIn("correct", quality)
+        self.assertIn("passed", quality)
+        self.assertIn("total", quality)
+        self.assertIn("quality_error", quality)
+        self.assertIs(quality["correct"], True)
+        self.assertEqual(quality["passed"], 4)
+        self.assertEqual(quality["total"], 4)
+
+    def test_generated_text_is_not_persisted(self):
+        self._run_with("SECRET-GENERATED-TEXT-12345")
+        run = self.saved[0]
+        blob = json.dumps(run)
+        self.assertNotIn("SECRET-GENERATED-TEXT-12345", blob)
+        for key in ("response", "text", "code", "prompt_text"):
+            self.assertNotIn(key, run)
 
 
 if __name__ == "__main__":
