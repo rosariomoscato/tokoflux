@@ -1,0 +1,21 @@
+# Node
+frontend/node_modules/
+
+# Frontend build output (generate with: cd frontend && npm ci && npm run build)
+frontend/dist/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# uv
+.uv/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Release artifacts
+*.zip
+Tokoflux-0.1.1/

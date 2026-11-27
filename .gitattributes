@@ -1,0 +1,5 @@
+* text=auto
+
+# Launcher scripts must keep Windows line endings
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
