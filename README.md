@@ -28,6 +28,7 @@ Serve `uv` nel PATH. Il launcher usa Python 3.12 (lo stesso ambiente usato duran
 - Il **primo token** è il primo frammento di risposta o ragionamento ricevuto in streaming. Il **tempo totale** è misurato dal server Tokoflux. I token/s provengono dai conteggi e dai tempi di Ollama. A caldo, la cache del prompt può incidere sulla misura.
 - La **quota del modello sulla GPU** rappresenta la memoria del modello allocata sulla GPU secondo Ollama. Il carico istantaneo della Radeon è una misura diversa.
 - La prima versione monitora le richieste di benchmark inviate da Tokoflux.
+- In **Benchmark** puoi incollare un prompt personalizzato (o ripristinare quello predefinito). Un prompt personalizzato viene misurato solo sulla velocità, senza verifica di correttezza; resta in memoria e non viene salvato nello storico.
 
 ## Novità 0.1.1 / What’s new in 0.1.1
 
@@ -41,7 +42,7 @@ Serve `uv` nel PATH. Il launcher usa Python 3.12 (lo stesso ambiente usato duran
 
 ## English quick start
 
-Extract the ZIP, start Ollama, then double-click **Avvia-Tokoflux.cmd** (or run **Installa-Tokoflux.cmd** once to get a desktop icon). Keep the launcher window open, or stop Tokoflux anytime with the **Shut down** button in the top-right corner. To uninstall, run **Disinstalla-Tokoflux.cmd**: it removes the desktop icon and, if you confirm, the data (`%LOCALAPPDATA%\Tokoflux`) and the app folder. The included frontend build needs no Node.js at runtime. Select English in the toolbar. Runs are stored locally under `%LOCALAPPDATA%\Tokoflux`. The Edge-installed app still needs the launcher running.
+Extract the ZIP, start Ollama, then double-click **Avvia-Tokoflux.cmd** (or run **Installa-Tokoflux.cmd** once to get a desktop icon). Keep the launcher window open, or stop Tokoflux anytime with the **Shut down** button in the top-right corner. To uninstall, run **Disinstalla-Tokoflux.cmd**: it removes the desktop icon and, if you confirm, the data (`%LOCALAPPDATA%\Tokoflux`) and the app folder. The included frontend build needs no Node.js at runtime. Select English in the toolbar. You can paste a custom prompt in Benchmark (or reset it to the default): it stays in memory and is never saved to history. Runs are stored locally under `%LOCALAPPDATA%\Tokoflux`. The Edge-installed app still needs the launcher running.
 
 ## Sviluppo / Development
 

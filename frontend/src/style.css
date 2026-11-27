@@ -161,6 +161,9 @@ th { color: var(--muted); font-weight: 600; }
 .prompt-body { margin-top: 10px; padding: 13px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-raised); }
 .prompt-note { font-size: 11px; color: var(--muted); margin: 0 0 8px; }
 .prompt-body pre, .drawer pre { margin: 0 0 10px; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--fg); font-family: Consolas, "Cascadia Code", monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.prompt-body textarea { display: block; width: 100%; box-sizing: border-box; margin: 0 0 8px; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--fg); font-family: Consolas, "Cascadia Code", monospace; font-size: 12px; line-height: 1.5; resize: vertical; }
+.prompt-body textarea:disabled { opacity: .6; }
+.prompt-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .prompt-body button, .drawer-body button { font-size: 12px; padding: 6px 11px; }
 
 /* Footer */
