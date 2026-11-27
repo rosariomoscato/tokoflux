@@ -98,10 +98,30 @@ def rate(tokens, ns):
     return round(tokens * 1e9 / ns, 2) if ns and tokens is not None else None
 
 
-def benchmark(models, mode, session, context):
+def parse_selection(data):
+    """Validate a benchmark request body and return a normalized selection.
+
+    Raises ValueError on any invalid field; the HTTP handler maps it to a 400.
+    """
+    models = data["models"]
+    mode = data["mode"]
+    context = data.get("context", CONTEXT)
+    repeats = data.get("repeats", 3)
+    if (not isinstance(models, list) or not 1 <= len(models) <= 2
+            or any(not isinstance(model, str) or not model for model in models)
+            or len(set(models)) != len(models) or mode not in ("warm", "cold")
+            or context not in ALLOWED_CONTEXTS
+            or not isinstance(repeats, int) or isinstance(repeats, bool)
+            or not 1 <= repeats <= 5):
+        raise ValueError()
+    return {"models": models, "mode": mode, "context": context, "repeats": repeats}
+
+
+def benchmark(models, mode, session, context, repeats=1):
     options = {"num_ctx": context, "num_predict": MAX_TOKENS, "temperature": 0}
+    position = 0
     try:
-        for position, model in enumerate(models):
+        for model in models:
             with LOCK:
                 JOB.update(model=model)
             request = {"model": model, "options": options, "stream": False}
@@ -109,41 +129,43 @@ def benchmark(models, mode, session, context):
                 ollama_json("/api/generate", {**request, "keep_alive": 0}, 120)
             else:
                 ollama_json("/api/generate", {**request, "keep_alive": "5m"}, 120)
-            start, first, final = perf_counter(), None, None
-            request.update(prompt=PROMPT, stream=True, keep_alive="5m")
-            with upstream("/api/generate", request, 300) as response:
-                for line in response:
-                    packet = json.loads(line)
-                    if packet.get("error"):
-                        raise ValueError(packet["error"])
-                    if first is None and (packet.get("response") or packet.get("thinking")):
-                        first = round(perf_counter() - start, 3)
-                    if packet.get("done"):
-                        final = packet
-                        break
-            if final is None:
-                raise ValueError("Incomplete Ollama response")
-            elapsed = round(perf_counter() - start, 3)
-            try:
-                active = next((item for item in ollama_json("/api/ps")["models"]
-                               if item["name"] == model), {})
-            except (OSError, ValueError, KeyError):
-                active = {}
-            size, vram = active.get("size"), active.get("size_vram")
-            prompt_tokens = final.get("prompt_eval_count")
-            cached = final.get("prompt_eval_cached_count")
-            # Ollama versions exposing a separate cache counter report newly evaluated
-            # tokens in prompt_eval_count. Legacy versions expose only that count.
-            save({
-                "date": datetime.now(timezone.utc).isoformat(), "model": model,
-                "mode": mode, "first": first, "total": elapsed,
-                "load": round(final["load_duration"] / 1e9, 3) if "load_duration" in final else None,
-                "prompt": rate(prompt_tokens, final.get("prompt_eval_duration")),
-                "decode": rate(final.get("eval_count"), final.get("eval_duration")),
-                "cached": cached, "gpu": round(100 * vram / size) if size and vram is not None else None,
-                "context": active.get("context_length"), "tokens": final.get("eval_count"),
-                "stop": final.get("done_reason"),
-            }, session, position)
+            for _ in range(repeats):
+                start, first, final = perf_counter(), None, None
+                request.update(prompt=PROMPT, stream=True, keep_alive="5m")
+                with upstream("/api/generate", request, 300) as response:
+                    for line in response:
+                        packet = json.loads(line)
+                        if packet.get("error"):
+                            raise ValueError(packet["error"])
+                        if first is None and (packet.get("response") or packet.get("thinking")):
+                            first = round(perf_counter() - start, 3)
+                        if packet.get("done"):
+                            final = packet
+                            break
+                if final is None:
+                    raise ValueError("Incomplete Ollama response")
+                elapsed = round(perf_counter() - start, 3)
+                try:
+                    active = next((item for item in ollama_json("/api/ps")["models"]
+                                   if item["name"] == model), {})
+                except (OSError, ValueError, KeyError):
+                    active = {}
+                size, vram = active.get("size"), active.get("size_vram")
+                prompt_tokens = final.get("prompt_eval_count")
+                cached = final.get("prompt_eval_cached_count")
+                # Ollama versions exposing a separate cache counter report newly evaluated
+                # tokens in prompt_eval_count. Legacy versions expose only that count.
+                save({
+                    "date": datetime.now(timezone.utc).isoformat(), "model": model,
+                    "mode": mode, "first": first, "total": elapsed,
+                    "load": round(final["load_duration"] / 1e9, 3) if "load_duration" in final else None,
+                    "prompt": rate(prompt_tokens, final.get("prompt_eval_duration")),
+                    "decode": rate(final.get("eval_count"), final.get("eval_duration")),
+                    "cached": cached, "gpu": round(100 * vram / size) if size and vram is not None else None,
+                    "context": active.get("context_length"), "tokens": final.get("eval_count"),
+                    "stop": final.get("done_reason"),
+                }, session, position)
+                position += 1
         with LOCK:
             JOB.update(status="complete", model=None)
     except Exception as error:
@@ -214,15 +236,11 @@ class Handler(SimpleHTTPRequestHandler):
             if not 0 < length <= 2048:
                 raise ValueError()
             data = json.loads(self.rfile.read(length))
-            models, mode = data["models"], data["mode"]
-            context = data.get("context", CONTEXT)
-            if (not isinstance(models, list) or not 1 <= len(models) <= 2
-                    or any(not isinstance(model, str) or not model for model in models)
-                    or len(set(models)) != len(models) or mode not in ("warm", "cold")
-                    or context not in ALLOWED_CONTEXTS):
-                raise ValueError()
+            selection = parse_selection(data)
         except (ValueError, KeyError, TypeError):
             return self.json({"error": "invalid_selection"}, 400)
+        models, mode, context, repeats = (selection["models"], selection["mode"],
+                                          selection["context"], selection["repeats"])
         with LOCK:
             if JOB["status"] == "running":
                 return self.json({"error": "already_running"}, 409)
@@ -233,7 +251,7 @@ class Handler(SimpleHTTPRequestHandler):
             if not set(models) <= installed:
                 return self.json({"error": "model_missing"}, 400)
             JOB.update(status="running", model=models[0], error=None)
-            Thread(target=benchmark, args=(models, mode, str(uuid.uuid4()), context), daemon=True).start()
+            Thread(target=benchmark, args=(models, mode, str(uuid.uuid4()), context, repeats), daemon=True).start()
         return self.json({"accepted": True}, 202)
 
     def log_message(self, fmt, *args):
