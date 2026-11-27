@@ -20,6 +20,17 @@ Serve `uv` nel PATH. Il launcher usa Python 3.12 (lo stesso ambiente usato duran
 
 **PWA (facoltativa):** con il launcher attivo, apri la stessa pagina in Edge e usa **App → Installa questo sito come app** nel menu del browser. La finestra dedicata richiede comunque il launcher attivo per leggere SQLite o lanciare benchmark.
 
+## Setup via GitHub / Installazione da GitHub
+
+Per preparare Tokoflux da GitHub in un solo comando (prima installazione o ripristino, ad esempio dopo aver svuotato la cartella locale):
+
+1. Scarica il repository da GitHub (ZIP oppure `git clone https://github.com/rosariomoscato/tokoflux.git`) ed estrailo in una cartella.
+2. Esegui una volta **Setup-Tokoflux.cmd**. Lo script controlla i prerequisiti (`git`, `node`/`npm`, `uv`), quindi clona (o aggiorna con `git pull`) il repository in `%USERPROFILE%\Tokoflux`, ricompila il frontend e avvia Tokoflux.
+
+La cartella di destinazione è configurabile con il parametro `-Target` di `Setup-Tokoflux.ps1` (es. `Setup-Tokoflux.ps1 -Target C:\altro\percorso`). Se la cartella esiste già ma non è un repository Tokoflux, lo script si ferma con un avviso senza eliminare né sovrascrivere nulla. Serve `node`/`npm` solo per la compilazione del frontend; lo script non elimina mai dati esistenti.
+
+To set Tokoflux up from GitHub in one command (first install or recovery, e.g. after wiping the local folder): download the repository from GitHub (ZIP or `git clone`) and extract it, then run **Setup-Tokoflux.cmd** once. It checks for `git`, `node`/`npm` and `uv`, then clones (or `git pull`s) the repo into `%USERPROFILE%\Tokoflux`, rebuilds the frontend and launches Tokoflux. Pass `-Target` to `Setup-Tokoflux.ps1` to choose a different folder; if the folder already exists but is not a Tokoflux repository it stops with a warning and deletes or overwrites nothing.
+
 ## Misure
 
 - I modelli partono in sequenza sullo stesso prompt, con un contesto configurabile (2.048–32.768 token, predefinito 8.192) e un limite di 2.048 token generati. Una prova segnala il raggiungimento del limite nel confronto.
@@ -46,10 +57,12 @@ Serve `uv` nel PATH. Il launcher usa Python 3.12 (lo stesso ambiente usato duran
 - Asse della **qualità**: Tokoflux ora esegue il codice e i casi `unittest` generati dal modello in una sandbox isolata e mostra la correttezza accanto alla velocità. In **Ultima prova** e nel **Confronto** compare un badge (es. ✓ 4/4), e la correttezza contribuisce al calcolo del vincitore.
 - La sandbox usa un subprocess `python -I` (modalità isolata) con timeout di 10 s e ambiente minimale; il testo generato non viene mai scritto su disco né conservato: si salva solo l’esito (passati/totali, esito corretto/errato/errore).
 - Le risposte non eseguibili (errore di sintassi, timeout, testo non-codice) sono distinte dai test falliti e non interrompono mai il benchmark.
+- Ogni prova ripete la misura **più volte per modello** (3 ripetizioni di default, al massimo 5) e mostra la **mediana** con l’intervallo **min–max**, più affidabile di un singolo campione. / Each run repeats the measurement **several times per model** (3 repeats by default, max 5) and shows the **median** with the **min–max** spread, more reliable than a single sample.
+- **Prompt personalizzato** in Benchmark: misurato solo sulla velocità, resta in memoria e non viene salvato nello storico. / **Custom prompt** in Benchmark: speed-only, kept in memory and never saved to history.
 
 ## English quick start
 
-Extract the ZIP, start Ollama, then double-click **Avvia-Tokoflux.cmd** (or run **Installa-Tokoflux.cmd** once to get a desktop icon). Keep the launcher window open, or stop Tokoflux anytime with the **Shut down** button in the top-right corner. To uninstall, run **Disinstalla-Tokoflux.cmd**: it removes the desktop icon and, if you confirm, the data (`%LOCALAPPDATA%\Tokoflux`) and the app folder. The included frontend build needs no Node.js at runtime. Select English in the toolbar. You can paste a custom prompt in Benchmark (or reset it to the default): it stays in memory and is never saved to history. Runs are stored locally under `%LOCALAPPDATA%\Tokoflux`. The Edge-installed app still needs the launcher running.
+Extract the ZIP, start Ollama, then double-click **Avvia-Tokoflux.cmd** (or run **Installa-Tokoflux.cmd** once to get a desktop icon). Keep the launcher window open, or stop Tokoflux anytime with the **Shut down** button in the top-right corner. To uninstall, run **Disinstalla-Tokoflux.cmd**: it removes the desktop icon and, if you confirm, the data (`%LOCALAPPDATA%\Tokoflux`) and the app folder. The included frontend build needs no Node.js at runtime. Select English in the toolbar. You can paste a custom prompt in Benchmark (or reset it to the default): it stays in memory and is never saved to history. Runs are stored locally under `%LOCALAPPDATA%\Tokoflux`. The Edge-installed app still needs the launcher running. To set up from GitHub in one command, run **Setup-Tokoflux.cmd** once: it clones (or updates) the repo into `%USERPROFILE%\Tokoflux`, rebuilds the frontend and launches.
 
 ## Sviluppo / Development
 
