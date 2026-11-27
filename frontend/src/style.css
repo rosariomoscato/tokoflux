@@ -82,6 +82,11 @@ strong, dd, td:nth-child(n+4) { font-variant-numeric: tabular-nums; }
 .metric svg { color: var(--cyan); flex: none; }
 .metric strong { font-family: Consolas, monospace; font-size: 21px; }
 .metric small, .active small { color: var(--muted); }
+.quality-line { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 12px; color: var(--muted); }
+.quality { display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.quality svg { flex: none; }
+.quality-pass { color: var(--plot); border-color: color-mix(in srgb, var(--plot) 40%, transparent); background: color-mix(in srgb, var(--plot) 12%, transparent); }
+.quality-fail, .quality-error { color: var(--error); border-color: color-mix(in srgb, var(--error) 40%, transparent); background: color-mix(in srgb, var(--error) 12%, transparent); }
 h2 { display: flex; gap: 9px; align-items: center; font-size: 18px; font-weight: 700; }
 .resource-empty { display: grid; min-height: 210px; justify-items: center; align-content: center; gap: 10px; color: var(--muted); }
 .resource-empty svg { color: var(--cyan); }

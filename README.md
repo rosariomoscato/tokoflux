@@ -1,4 +1,4 @@
-# Tokoflux 0.1.1
+# Tokoflux 0.2.0
 
 Monitor dell’inferenza locale / Local inference monitor
 
@@ -27,6 +27,7 @@ Serve `uv` nel PATH. Il launcher usa Python 3.12 (lo stesso ambiente usato duran
 - **A caldo** precarica il modello prima di avviare il cronometro. **A freddo** scarica il modello dalla memoria prima della prova; la cache del sistema operativo può comunque conservare dati dell’SSD.
 - Il **primo token** è il primo frammento di risposta o ragionamento ricevuto in streaming. Il **tempo totale** è misurato dal server Tokoflux. I token/s provengono dai conteggi e dai tempi di Ollama. A caldo, la cache del prompt può incidere sulla misura.
 - La **quota del modello sulla GPU** rappresenta la memoria del modello allocata sulla GPU secondo Ollama. Il carico istantaneo della Radeon è una misura diversa.
+- La **correttezza** esegue i test generati dal modello in una sandbox isolata (subprocess `python -I`, timeout di 10 s, ambiente minimale, nessuna scrittura del testo generato): ogni prova riporta quanti test passano (es. 4/4) e un esito «corretto / errato / errore». Viene salvato solo l’esito, mai il testo generato.
 - La prima versione monitora le richieste di benchmark inviate da Tokoflux.
 - In **Benchmark** puoi incollare un prompt personalizzato (o ripristinare quello predefinito). Un prompt personalizzato viene misurato solo sulla velocità, senza verifica di correttezza; resta in memoria e non viene salvato nello storico.
 
@@ -39,6 +40,12 @@ Serve `uv` nel PATH. Il launcher usa Python 3.12 (lo stesso ambiente usato duran
 - **Contesto configurabile** nel Benchmark per ridurre la memoria usata. Una soglia **Memoria GPU** avvisa quando due modelli insieme la superano. La Guida spiega come limitare la GPU con `OLLAMA_NUM_GPU`/`OLLAMA_MAX_VRAM` in caso di errori ROCm su iGPU AMD.
 - In **Ultima prova**, **Confronta** mostra i modelli uno contro l’altro con un grafico a barre animato e l’indicazione del vincitore (la tabella di dettaglio resta nel Benchmark).
 - **Pulisci storico** (solo i risultati) e **Resetta app** (storico + preferenze, riparte da zero) nella sezione Storico.
+
+## Novità 0.2.0 / What’s new in 0.2.0
+
+- Asse della **qualità**: Tokoflux ora esegue il codice e i casi `unittest` generati dal modello in una sandbox isolata e mostra la correttezza accanto alla velocità. In **Ultima prova** e nel **Confronto** compare un badge (es. ✓ 4/4), e la correttezza contribuisce al calcolo del vincitore.
+- La sandbox usa un subprocess `python -I` (modalità isolata) con timeout di 10 s e ambiente minimale; il testo generato non viene mai scritto su disco né conservato: si salva solo l’esito (passati/totali, esito corretto/errato/errore).
+- Le risposte non eseguibili (errore di sintassi, timeout, testo non-codice) sono distinte dai test falliti e non interrompono mai il benchmark.
 
 ## English quick start
 

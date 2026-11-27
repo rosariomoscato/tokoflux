@@ -5,7 +5,7 @@ import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Too
 import { Button } from "./button";
 import "./style.css";
 
-const VERSION = "0.1.1";
+const VERSION = "0.2.0";
 const AUTHOR_URL = "https://rosmoscato.xyz";
 const COLORS = ["var(--plot)", "var(--cyan)"];
 const DEFAULT_CONTEXT = 8192;
@@ -37,7 +37,7 @@ const strings = {
     warmColdText: "«A caldo» precarica il modello prima di avviare il cronometro: misuri la generazione con il modello già in memoria (Ollama può riusare i token in cache). «A freddo» scarica il modello dalla memoria prima della prova: il tempo include il caricamento dal disco, anche se la cache del sistema operativo può conservare dati dell’SSD.",
     whatPrompt: "Cosa chiede il prompt",
     whatPromptText: "Il prompt chiede a ogni modello di scrivere una funzione Python che unisce intervalli chiusi sovrapposti senza modificare l’input, con quattro casi di test unittest (input vuoto, intervalli non ordinati, estremi che si toccano, intervalli separati). Il testo resta in inglese.",
-    testsNote: "I test generati non vengono eseguiti: Tokoflux misura solo la generazione del codice e delle metriche.",
+    testsNote: "I test generati vengono eseguiti in una sandbox isolata: Tokoflux verifica la correttezza oltre alla velocità. Viene salvato solo il risultato, mai il testo generato.",
     readMetrics: "Come leggere le metriche",
     readMetricsList: [
       "Velocità di generazione (tok/s): token prodotti al secondo.",
@@ -55,6 +55,8 @@ const strings = {
     compareBtn: "Confronta", compareOff: "Chiudi confronto", selectModel: "Seleziona modello",
     genShort: "Velocità", promptShort: "Prompt", firstShort: "1° token", totalShort: "Totale", loadShort: "Carico",
     winner: "Vince", tie: "Pareggio", ofMetrics: "metriche",
+    quality: "Correttezza", testsLabel: "test",
+    qualityErr: { timeout: "timeout", syntax: "sintassi", no_tests: "nessun test", exec: "errore" },
     clearHistory: "Pulisci storico", clearHistoryConfirm: "Eliminare tutti i risultati?",
     resetApp: "Resetta app", resetAppConfirm: "Ripristinare l’app (storico e preferenze)?",
     yesClear: "Sì, elimina", yesReset: "Sì, ripristina", cancel: "Annulla",
@@ -98,7 +100,7 @@ const strings = {
     warmColdText: "Warm preloads the model before timing: you measure generation with the model already in memory (Ollama may reuse cached tokens). Cold unloads the model from memory first: the time includes loading from disk, though the OS cache may still keep SSD data.",
     whatPrompt: "What the prompt asks",
     whatPromptText: "The prompt asks each model to write a Python function that merges closed overlapping intervals without mutating its input, with four unittest cases (empty input, unsorted intervals, touching endpoints, separate intervals). The text stays in English.",
-    testsNote: "Generated tests are not executed: Tokoflux only measures code generation and metrics.",
+    testsNote: "Generated tests are executed in an isolated sandbox: Tokoflux checks correctness alongside speed. Only the result is stored, never the generated text.",
     readMetrics: "How to read the metrics",
     readMetricsList: [
       "Generation speed (tok/s): tokens produced per second.",
@@ -116,6 +118,8 @@ const strings = {
     compareBtn: "Compare", compareOff: "Close comparison", selectModel: "Select model",
     genShort: "Speed", promptShort: "Prompt", firstShort: "1st token", totalShort: "Total", loadShort: "Load",
     winner: "Winner", tie: "Tie", ofMetrics: "metrics",
+    quality: "Correctness", testsLabel: "tests",
+    qualityErr: { timeout: "timeout", syntax: "syntax", no_tests: "no tests", exec: "error" },
     clearHistory: "Clear history", clearHistoryConfirm: "Delete all results?",
     resetApp: "Reset app", resetAppConfirm: "Reset the app (history and preferences)?",
     yesClear: "Yes, delete", yesReset: "Yes, reset", cancel: "Cancel",
@@ -138,11 +142,13 @@ const strings = {
 type Language = keyof typeof strings;
 type Theme = "system" | "dark" | "light";
 type Mode = "warm" | "cold";
+type QualityError = "timeout" | "syntax" | "no_tests" | "exec";
 type Run = {
   id: number; session: string | null; position: number | null;
   date: string; model: string; mode: Mode; first: number | null; total: number; load: number | null;
   prompt: number | null; decode: number | null; cached: number | null; gpu: number | null;
   context: number | null; tokens: number | null; stop: string | null;
+  quality: { correct: boolean | null; passed: number | null; total: number | null; quality_error: QualityError | null } | null;
 };
 type Status = { online: boolean; models: { name: string; size: number }[]; running: { name: string; size: number; size_vram?: number; context_length?: number }[] };
 type Bench = { job: { status: "idle" | "running" | "complete" | "error"; model: string | null }; runs: Run[] };
@@ -163,7 +169,7 @@ function extent(values: (number | null | undefined)[]): [number, number] | null 
   return [Math.min(...nums), Math.max(...nums)];
 }
 
-type Summary = { model: string; count: number; date: string; stop: string | null } & Record<MetricKey, number | null>;
+type Summary = { model: string; count: number; date: string; stop: string | null; correct: boolean | null; passed: number | null; tests: number | null; quality_error: QualityError | null } & Record<MetricKey, number | null>;
 
 function summarize(group: Run[]): Summary {
   const last = group[group.length - 1];
@@ -172,6 +178,10 @@ function summarize(group: Run[]): Summary {
     count: group.length,
     date: last?.date ?? "",
     stop: group.some(run => run.stop === "length") ? "length" : null,
+    correct: last?.quality?.correct ?? null,
+    passed: last?.quality?.passed ?? null,
+    tests: last?.quality?.total ?? null,
+    quality_error: last?.quality?.quality_error ?? null,
     decode: median(group.map(run => run.decode)),
     prompt: median(group.map(run => run.prompt)),
     first: median(group.map(run => run.first)),
@@ -185,6 +195,28 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { ...init, cache: "no-store" });
   if (!response.ok) throw new Error(String(response.status));
   return response.json();
+}
+
+type Correctness = { kind: "pass" | "fail" | "error"; passed: number | null; total: number | null; error: QualityError | null };
+
+function correctnessOf(s: { correct: boolean | null; passed: number | null; tests: number | null; quality_error: QualityError | null }): Correctness | null {
+  if (s.correct === true) return { kind: "pass", passed: s.passed, total: s.tests, error: null };
+  if (s.correct === false) return { kind: "fail", passed: s.passed, total: s.tests, error: null };
+  if (s.quality_error) return { kind: "error", passed: null, total: null, error: s.quality_error };
+  return null;
+}
+
+function correctnessScore(s: { correct: boolean | null }): number {
+  return s.correct === true ? 100 : s.correct === false ? 50 : 0;
+}
+
+function hasCorrectness(s: { passed: number | null; tests: number | null; quality_error: QualityError | null }): boolean {
+  return s.passed !== null || s.tests !== null || s.quality_error !== null;
+}
+
+function CorrectnessBadge({ value, texts }: { value: Correctness; texts: { testsLabel: string; qualityErr: Record<QualityError, string> } }) {
+  if (value.kind === "error") return <span className="quality quality-error">{texts.qualityErr[value.error!]}</span>;
+  return <span className={`quality quality-${value.kind}`}>{value.kind === "pass" ? <Check size={13} /> : <X size={13} />}{value.passed}/{value.total} {texts.testsLabel}</span>;
 }
 
 function App() {
@@ -287,6 +319,7 @@ function App() {
   const selectedGroup = latestSession.filter(run => run.model === selectedLatest);
   const summaryByModel = new Map(lastModels.map(model => [model, summarize(latestSession.filter(run => run.model === model))]));
   const selectedSummary = summaryByModel.get(selectedLatest) ?? summarize(selectedGroup);
+  const selectedQuality = correctnessOf(selectedSummary);
   const spread = (key: MetricKey) => selectedSummary.count > 1 ? extent(selectedGroup.map(run => run[key])) : null;
   const decodeSpread = spread("decode");
 
@@ -393,6 +426,16 @@ function App() {
       const best = m.lowerIsBetter ? Math.min(a, b) : Math.max(a, b);
       wins[a === best ? lastModels[0] : lastModels[1]]++;
     });
+    const aCorrect = summaryByModel.get(lastModels[0]);
+    const bCorrect = summaryByModel.get(lastModels[1]);
+    if (aCorrect && bCorrect && hasCorrectness(aCorrect) && hasCorrectness(bCorrect)) {
+      const sa = correctnessScore(aCorrect);
+      const sb = correctnessScore(bCorrect);
+      if (sa !== sb) {
+        counted++;
+        wins[sa > sb ? lastModels[0] : lastModels[1]]++;
+      }
+    }
     const sorted = [...lastModels].sort((x, y) => wins[y] - wins[x]);
     const winner = lastModels.length > 1 && wins[sorted[0]] > wins[sorted[1]] ? sorted[0] : null;
     return { winner, winCount: winner ? wins[winner] : 0, metricCount: counted };
@@ -466,6 +509,7 @@ function App() {
             <div className="lead"><div>{t.decode}</div><strong>{format(selectedSummary.decode)}</strong><span>{t.units}</span>
               {decodeSpread && <em className="spread" title={t.spread}>{format(decodeSpread[0])}–{format(decodeSpread[1])} {t.units}</em>}
             </div>
+            {selectedQuality && <div className="quality-line"><CorrectnessBadge value={selectedQuality} texts={t} /></div>}
             {chart.length > 1 ? <div className="plot" role="img" aria-label={t.trend}>
               <ResponsiveContainer width="100%" height="100%"><AreaChart data={chart} margin={{ top: 8, right: 4, left: 4, bottom: 1 }}>
                 <defs><linearGradient id="signal" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="var(--plot)" stopOpacity={0.37} /><stop offset="100%" stopColor="var(--plot)" stopOpacity={0.02} /></linearGradient></defs>
@@ -550,14 +594,18 @@ function App() {
         </div>
         {compareModels.length > 0 && <div className="comparison">
           <h3>{t.comparison} <span>· {t[mode]}</span></h3>
-          <div className="compare-grid">{compareModels.map(({ model, summary }) => <article key={model}>
-            <div><strong>{model}</strong><small>{summary.count ? date(summary.date) : "—"}{summary.count > 1 && " · " + fmt(t.repeats, summary.count)}</small></div>
-            <dl>{[
-              [t.decode, summary.decode, t.units], [t.prompt, summary.prompt, t.units], [t.first, summary.first, "s"],
-              [t.total, summary.total, "s"], [t.load, summary.load, "s"], [t.cached, summary.cached, ""],
-            ].map(([label, value, unit]) => <div key={String(label)}><dt>{label}</dt><dd>{format(value as number | null, label === t.cached ? 0 : 1)} {unit}</dd></div>)}</dl>
-            {summary.stop === "length" && <small className="error">{t.limit}</small>}
-          </article>)}</div>
+          <div className="compare-grid">{compareModels.map(({ model, summary }) => {
+            const quality = correctnessOf(summary);
+            return <article key={model}>
+              <div><strong>{model}</strong><small>{summary.count ? date(summary.date) : "—"}{summary.count > 1 && " · " + fmt(t.repeats, summary.count)}</small></div>
+              <dl>{[
+                [t.decode, summary.decode, t.units], [t.prompt, summary.prompt, t.units], [t.first, summary.first, "s"],
+                [t.total, summary.total, "s"], [t.load, summary.load, "s"], [t.cached, summary.cached, ""],
+              ].map(([label, value, unit]) => <div key={String(label)}><dt>{label}</dt><dd>{format(value as number | null, label === t.cached ? 0 : 1)} {unit}</dd></div>)}</dl>
+              {quality && <div className="quality-line"><span>{t.quality}</span><CorrectnessBadge value={quality} texts={t} /></div>}
+              {summary.stop === "length" && <small className="error">{t.limit}</small>}
+            </article>;
+          })}</div>
         </div>}
       </section>
       <section className="panel history">

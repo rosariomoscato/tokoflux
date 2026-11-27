@@ -8,6 +8,9 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
+import tempfile
 from threading import Lock, Thread, Timer
 from time import perf_counter
 from urllib.parse import urlsplit
@@ -19,7 +22,7 @@ ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "frontend" / "dist"
 OLLAMA = "http://127.0.0.1:11434"
 DB = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "share")) / "Tokoflux" / "history.sqlite3"
-VERSION = "0.1.1"
+VERSION = "0.2.0"
 DEFAULT_PROMPT = ("Write a Python function that merges closed overlapping intervals without "
                   "mutating its input. Include four unittest cases: empty input, unsorted "
                   "intervals, touching endpoints, and separate intervals. Return code only.")
@@ -30,6 +33,82 @@ MAX_TOKENS = 2048
 ALLOWED_CONTEXTS = (2048, 4096, 8192, 16384, 32768)
 OPENER = build_opener(ProxyHandler({}))
 LOCK = Lock()
+SANDBOX_TIMEOUT = 10.0
+# Runs the generated code's unittest cases in a child `python -I` (isolated mode),
+# with a minimal environment, no filesystem writes for the code (it arrives on stdin)
+# and any accidental writes confined to a disposable temp directory. It prints one
+# JSON line to the real stdout; the runner parses it back in the parent.
+HARNESS = '''
+import io
+import json
+import sys
+import unittest
+
+
+def strip_fences(text):
+    lines = text.splitlines()
+    out = []
+    inside = False
+    for line in lines:
+        if line.strip().startswith("```"):
+            inside = not inside
+            continue
+        if inside:
+            out.append(line)
+    if not out:
+        return text
+    return "\\n".join(out)
+
+
+def looks_like_code(text):
+    low = text.lower()
+    return ("```" in low or "def " in low or "class " in low
+            or "import " in low or "unittest" in low)
+
+
+def emit(payload):
+    sys.__stdout__.write(json.dumps(payload) + "\\n")
+    sys.__stdout__.flush()
+
+
+raw = sys.stdin.read()
+src = strip_fences(raw)
+try:
+    compiled = compile(src, "<generated>", "exec")
+except (SyntaxError, ValueError):
+    # Unparseable text: a genuine code syntax error vs. a non-code answer.
+    emit({"error": "syntax" if looks_like_code(raw) else "no_tests"})
+    raise SystemExit(0)
+
+ns = {"__name__": "__generated__"}
+stdout, stderr = sys.stdout, sys.stderr
+sys.stdout = io.StringIO()
+sys.stderr = io.StringIO()
+try:
+    exec(compiled, ns)
+except SystemExit:
+    pass
+except BaseException:
+    emit({"error": "exec"})
+    raise SystemExit(0)
+finally:
+    sys.stdout, sys.stderr = stdout, stderr
+
+cases = [obj for obj in ns.values()
+         if isinstance(obj, type) and issubclass(obj, unittest.TestCase)
+         and obj is not unittest.TestCase]
+if not cases:
+    emit({"error": "no_tests"})
+    raise SystemExit(0)
+
+suite = unittest.TestSuite()
+for case in cases:
+    suite.addTests(unittest.TestLoader().loadTestsFromTestCase(case))
+stream = io.StringIO()
+result = unittest.TextTestRunner(stream=stream, verbosity=0).run(suite)
+emit({"passed": result.testsRun - len(result.failures) - len(result.errors),
+      "total": result.testsRun})
+'''
 JOB = {"status": "idle", "model": None, "error": None}
 SERVER = None
 
@@ -111,6 +190,55 @@ def rate(tokens, ns):
     return round(tokens * 1e9 / ns, 2) if ns and tokens is not None else None
 
 
+def _sandbox_env():
+    """A minimal environment for the sandboxed subprocess: only what Windows needs
+    to start a fresh Python, with no user credentials or site configuration."""
+    env = {}
+    for key in ("SystemRoot", "SYSTEMROOT", "WINDIR", "windir"):
+        if key in os.environ:
+            env[key] = os.environ[key]
+    if "SystemRoot" not in env and "SYSTEMROOT" in os.environ:
+        env["SystemRoot"] = os.environ["SYSTEMROOT"]
+    return env
+
+
+def run_tests_sandboxed(code, timeout=SANDBOX_TIMEOUT):
+    """Execute the generated code's unittest cases in an isolated subprocess and
+    return a correctness result. Never raises; failures map to `quality_error`.
+
+    Returns ``{"correct", "passed", "total", "quality_error"}`` where ``correct``
+    is True only when all discovered tests pass, and ``quality_error`` is one of
+    ``"timeout"``, ``"syntax"``, ``"no_tests"``, ``"exec"`` (or None on success).
+    The generated text is passed on stdin and is never written to disk.
+    """
+    if not isinstance(code, str) or not code.strip():
+        return {"correct": None, "passed": None, "total": None, "quality_error": "no_tests"}
+    with tempfile.TemporaryDirectory() as workdir:
+        try:
+            process = subprocess.run(
+                [sys.executable, "-I", "-c", HARNESS],
+                input=code.encode("utf-8", "replace"), capture_output=True,
+                timeout=timeout, cwd=workdir, env=_sandbox_env(),
+            )
+        except subprocess.TimeoutExpired:
+            return {"correct": None, "passed": None, "total": None, "quality_error": "timeout"}
+        except OSError:
+            return {"correct": None, "passed": None, "total": None, "quality_error": "exec"}
+    try:
+        lines = process.stdout.decode("utf-8", "replace").strip().splitlines()
+        result = json.loads(lines[-1])
+    except (ValueError, IndexError):
+        return {"correct": None, "passed": None, "total": None, "quality_error": "exec"}
+    error = result.get("error")
+    if error in ("syntax", "no_tests", "exec", "timeout"):
+        return {"correct": None, "passed": None, "total": None, "quality_error": error}
+    if error:
+        return {"correct": None, "passed": None, "total": None, "quality_error": "exec"}
+    passed, total = result.get("passed", 0), result.get("total", 0)
+    return {"correct": bool(total > 0 and passed == total),
+            "passed": passed, "total": total, "quality_error": None}
+
+
 def parse_selection(data):
     """Validate a benchmark request body and return a normalized selection.
 
@@ -146,12 +274,15 @@ def benchmark(models, mode, session, context, repeats=1, prompt=PROMPT):
                 ollama_json("/api/generate", {**request, "keep_alive": "5m"}, 120)
             for _ in range(repeats):
                 start, first, final = perf_counter(), None, None
+                parts = []
                 request.update(prompt=prompt, stream=True, keep_alive="5m")
                 with upstream("/api/generate", request, 300) as response:
                     for line in response:
                         packet = json.loads(line)
                         if packet.get("error"):
                             raise ValueError(packet["error"])
+                        if packet.get("response"):
+                            parts.append(packet["response"])
                         if first is None and (packet.get("response") or packet.get("thinking")):
                             first = round(perf_counter() - start, 3)
                         if packet.get("done"):
@@ -159,6 +290,10 @@ def benchmark(models, mode, session, context, repeats=1, prompt=PROMPT):
                             break
                 if final is None:
                     raise ValueError("Incomplete Ollama response")
+                # Correctness applies only to the built-in coding prompt (custom
+                # prompts are speed-only). The generated text is executed in a
+                # sandbox; only the pass/total result is persisted, never the text.
+                quality = run_tests_sandboxed("".join(parts)) if prompt == DEFAULT_PROMPT else None
                 elapsed = round(perf_counter() - start, 3)
                 try:
                     active = next((item for item in ollama_json("/api/ps")["models"]
@@ -179,6 +314,7 @@ def benchmark(models, mode, session, context, repeats=1, prompt=PROMPT):
                     "cached": cached, "gpu": round(100 * vram / size) if size and vram is not None else None,
                     "context": active.get("context_length"), "tokens": final.get("eval_count"),
                     "stop": final.get("done_reason"),
+                    "quality": quality,
                 }, session, position)
                 position += 1
         with LOCK:
