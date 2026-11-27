@@ -10,6 +10,8 @@ const AUTHOR_URL = "https://rosmoscato.xyz";
 const COLORS = ["var(--plot)", "var(--cyan)"];
 const DEFAULT_CONTEXT = 8192;
 const CONTEXT_OPTIONS = [2048, 4096, 8192, 16384, 32768];
+const DEFAULT_REPEATS = 3;
+const REPEAT_OPTIONS = [1, 2, 3, 4, 5];
 
 const strings = {
   it: {
@@ -45,7 +47,7 @@ const strings = {
       "Tempo al primo token: primo frammento di risposta o ragionamento ricevuto in streaming.",
       "Tempo totale: misurato dal server Tokoflux.",
       "Quota del modello sulla GPU: memoria del modello allocata sulla GPU secondo Ollama. «100% GPU» indica dove è caricato il modello, non il carico della GPU.",
-      "Mediana e ripetizioni: ogni prova ripete la misura (predefinito 3) e mostra la mediana con l’intervallo min–max.",
+      "Mediana e ripetizioni: ogni prova ripete la misura (1–5 ripetizioni, predefinito 3, scelto nel pannello Benchmark) e mostra la mediana con l’intervallo min–max.",
     ],
     exactPrompt: "Prompt esatto", promptLangNote: "Il testo resta in inglese in entrambe le lingue.",
     resetPrompt: "Ripristina predefinito", customPromptNote: "Un prompt personalizzato viene misurato solo sulla velocità, senza verifica di correttezza.",
@@ -64,6 +66,7 @@ const strings = {
     shutdown: "Spegni", shutdownConfirm: "Arrestare Tokoflux?", yesShutdown: "Sì, arresta",
     stopped: "Tokoflux arrestato", stoppedHint: "Puoi chiudere questa scheda.",
     contextLabel: "Contesto", gpuBudget: "Memoria GPU (GiB)",
+    repeatsLabel: "Ripetizioni", repeatsHelp: "Ripetizioni per modello, da 1 a 5. Più ripetizioni danno una misura più stabile.",
     combinedSize: "I due modelli insieme: ≈ {n} GiB.",
     vramWarning: "Oltre la soglia memoria GPU ({n} GiB). Riduci il contesto o usa un modello alla volta per evitare errori ROCm.",
     rocmTitle: "Memoria GPU ed errori ROCm",
@@ -108,7 +111,7 @@ const strings = {
       "Time to first token: first response or reasoning chunk received in streaming.",
       "Total time: measured by the Tokoflux server.",
       'Model share on GPU: model memory allocated on the GPU according to Ollama. "100% GPU" means where the model is loaded, not GPU load.',
-      "Median and repeats: each run repeats the measurement (default 3) and shows the median with the min–max spread.",
+      "Median and repeats: each run repeats the measurement (1–5 repeats, default 3, chosen in the Benchmark panel) and shows the median with the min–max spread.",
     ],
     exactPrompt: "Exact prompt", promptLangNote: "The text stays in English in both languages.",
     resetPrompt: "Reset to default", customPromptNote: "A custom prompt is benchmarked for speed only, with no correctness check.",
@@ -127,6 +130,7 @@ const strings = {
     shutdown: "Shut down", shutdownConfirm: "Stop Tokoflux?", yesShutdown: "Yes, stop",
     stopped: "Tokoflux stopped", stoppedHint: "You can close this tab.",
     contextLabel: "Context", gpuBudget: "GPU memory (GiB)",
+    repeatsLabel: "Repeats", repeatsHelp: "Repeats per model, 1 to 5. More repeats give a more stable measurement.",
     combinedSize: "Both models together: ≈ {n} GiB.",
     vramWarning: "Exceeds the GPU memory threshold ({n} GiB). Lower the context or run one model at a time to avoid ROCm errors.",
     rocmTitle: "GPU memory & ROCm errors",
@@ -245,6 +249,7 @@ function App() {
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [copiedHelp, setCopiedHelp] = useState(false);
   const [context, setContext] = useState(DEFAULT_CONTEXT);
+  const [repeats, setRepeats] = useState(DEFAULT_REPEATS);
   const [vramBudget, setVramBudget] = useState<number>(() => {
     const saved = Number(localStorage.getItem("tokoflux.vramBudget"));
     return Number.isFinite(saved) && saved > 0 ? saved : 24;
@@ -341,7 +346,7 @@ function App() {
     try {
       await persistPrompt(prompt);
       await api("/api/benchmarks", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ models: [modelA, modelB].filter(Boolean), mode, context }) });
+        body: JSON.stringify({ models: [modelA, modelB].filter(Boolean), mode, context, repeats }) });
       setBench(await api<Bench>("/api/benchmarks"));
     } catch { setLaunchError(true); }
     finally { setStarting(false); }
@@ -558,6 +563,9 @@ function App() {
           </select></label>
           <label>{t.contextLabel}<select value={context} disabled={busy} onChange={e => setContext(Number(e.target.value))}>
             {CONTEXT_OPTIONS.map(c => <option key={c} value={c}>{format(c, 0)}</option>)}
+          </select></label>
+          <label title={t.repeatsHelp}>{t.repeatsLabel}<select value={repeats} disabled={busy} onChange={e => setRepeats(Number(e.target.value))}>
+            {REPEAT_OPTIONS.map(n => <option key={n} value={n}>{n}</option>)}
           </select></label>
         </div>
         {modelB && hasSizes && <div className="vram">

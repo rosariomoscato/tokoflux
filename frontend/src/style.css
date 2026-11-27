@@ -102,7 +102,7 @@ dd { color: var(--fg); text-align: right; }
 .bench, .history { margin-top: 16px; }
 .section-head { align-items: start; }
 .section-head button { font-size: 13px; white-space: nowrap; }
-.fields { display: grid; grid-template-columns: 1fr 1fr .6fr .6fr; gap: 12px; margin-top: 18px; }
+.fields { display: grid; grid-template-columns: 1fr 1fr .6fr .6fr .5fr; gap: 12px; margin-top: 18px; }
 .fields label { min-width: 0; color: var(--muted); font-size: 12px; font-weight: 600; }
 .fields select { display: block; width: 100%; padding: 9px 10px; margin-top: 5px; border: 1px solid var(--line); border-radius: 9px; color: var(--fg); background: var(--surface-raised); font-size: 13px; }
 .vram { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-top: 12px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-raised); }
